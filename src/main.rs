@@ -117,7 +117,7 @@ pub fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
             )),
             directional_light: DirectionalLight {
                 color: Color::rgb_linear(0.95, 0.69268, 0.537758),
-                illuminance: 3000000.0,
+                illuminance: 3000000.0 * 0.2,
                 shadows_enabled: true,
                 shadow_depth_bias: 0.04,
                 shadow_normal_bias: 1.8,
@@ -133,18 +133,20 @@ pub fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
         GrifLight,
     ));
 
+    let point_spot_mult = 1000.0;
+
     // Sky
     commands.spawn((
         PointLightBundle {
             point_light: PointLight {
                 color: Color::rgb(0.8, 0.9, 0.97),
-                intensity: 10000.0,
+                intensity: 10000.0 * point_spot_mult,
                 shadows_enabled: false,
                 range: 50.0,
                 radius: 3.0,
                 ..default()
             },
-            transform: Transform::from_xyz(-17.0, 20.0, -16.0),
+            transform: Transform::from_xyz(-17.0, 20.0, -12.0),
             ..default()
         },
         GrifLight,
@@ -157,7 +159,7 @@ pub fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
                 .looking_at(Vec3::new(0.0, 999.0, 0.0), Vec3::X),
             spot_light: SpotLight {
                 range: 15.0,
-                intensity: 5000.0,
+                intensity: 5000.0 * point_spot_mult,
                 color: Color::rgb(1.0, 0.97, 0.85),
                 shadows_enabled: false,
                 inner_angle: PI * 0.42,
@@ -168,22 +170,6 @@ pub fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
         },
         GrifLight,
     ));
-
-    //commands.spawn((
-    //    PointLightBundle {
-    //        point_light: PointLight {
-    //            color: Color::rgb(0.8, 0.9, 0.97),
-    //            intensity: 10000.0,
-    //            shadows_enabled: false,
-    //            range: 24.0,
-    //            radius: 3.0,
-    //            ..default()
-    //        },
-    //        transform: Transform::from_xyz(-17.0, 0.1, -8.0),
-    //        ..default()
-    //    },
-    //    GrifLight,
-    //));
 
     // Camera
     commands
@@ -220,6 +206,7 @@ pub fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
             EnvironmentMapLight {
                 diffuse_map: asset_server.load("environment_maps/pisa_diffuse_rgb9e5_zstd.ktx2"),
                 specular_map: asset_server.load("environment_maps/pisa_specular_rgb9e5_zstd.ktx2"),
+                intensity: 1000.0,
             },
             CameraController {
                 walk_speed: 2.0,
@@ -296,10 +283,10 @@ pub fn proc_scene(
 fn move_directional_light(
     mut query: Query<&mut Transform, With<DirectionalLight>>,
     mut motion_evr: EventReader<MouseMotion>,
-    keys: Res<Input<KeyCode>>,
+    keys: Res<ButtonInput<KeyCode>>,
     mut e_rot: Local<Vec3>,
 ) {
-    if !keys.pressed(KeyCode::L) {
+    if !keys.pressed(KeyCode::KeyL) {
         return;
     }
     for mut trans in &mut query {
