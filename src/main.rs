@@ -1,28 +1,26 @@
 use std::f32::consts::PI;
 
-mod auto_instance;
 mod camera_controller;
-//mod mipmap_generator;
+mod mipmap_generator;
 
-use auto_instance::{consolidate_material_instances, AutoInstancePlugin};
 use bevy::{
     core_pipeline::{
         bloom::BloomSettings,
         experimental::taa::{TemporalAntiAliasBundle, TemporalAntiAliasPlugin},
-        prepass::DeferredPrepass,
     },
     diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
-    input::{common_conditions::input_toggle_active, mouse::MouseMotion},
+    input::mouse::MouseMotion,
     math::vec3,
     pbr::{
-        CascadeShadowConfigBuilder, DefaultOpaqueRendererMethod, PbrPlugin,
-        ScreenSpaceAmbientOcclusionBundle, TransmittedShadowReceiver,
+        CascadeShadowConfigBuilder, ScreenSpaceAmbientOcclusionBundle, TransmittedShadowReceiver,
     },
     prelude::*,
     render::view::ColorGrading,
-    window::PresentMode,
+    window::{PresentMode, WindowResolution},
+    winit::{UpdateMode, WinitSettings},
 };
 use camera_controller::CameraControllerPlugin;
+use mipmap_generator::{generate_mipmaps, MipmapGeneratorPlugin, MipmapGeneratorSettings};
 
 use crate::{
     camera_controller::CameraController,
@@ -50,9 +48,14 @@ pub fn main() {
             color: Color::rgb(0.0, 0.0, 0.0),
             brightness: 0.0,
         })
+        .insert_resource(WinitSettings {
+            focused_mode: UpdateMode::Continuous,
+            unfocused_mode: UpdateMode::Continuous,
+        })
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 present_mode: PresentMode::Immediate,
+                resolution: WindowResolution::new(1920.0, 1080.0).with_scale_factor_override(1.0),
                 ..default()
             }),
             ..default()
@@ -60,25 +63,17 @@ pub fn main() {
         .add_plugins(LogDiagnosticsPlugin::default())
         .add_plugins(FrameTimeDiagnosticsPlugin::default())
         // Generating mipmaps takes a minute
-        //.insert_resource(MipmapGeneratorSettings {
-        //    anisotropic_filtering: 16,
-        //    ..default()
-        //})
+        .insert_resource(MipmapGeneratorSettings {
+            anisotropic_filtering: 16,
+            ..default()
+        })
         .add_plugins((
-            AutoInstancePlugin,
-            //MipmapGeneratorPlugin,
+            MipmapGeneratorPlugin,
             CameraControllerPlugin,
             TemporalAntiAliasPlugin,
         ))
         // Mipmap generation be skipped if ktx2 is used
-        .add_systems(
-            Update,
-            (
-                //generate_mipmaps::<StandardMaterial>,
-                consolidate_material_instances::<StandardMaterial>,
-                proc_scene,
-            ),
-        )
+        .add_systems(Update, (generate_mipmaps::<StandardMaterial>, proc_scene))
         .add_systems(Startup, setup)
         .add_systems(Update, move_directional_light);
 
@@ -102,8 +97,6 @@ pub fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
             ..default()
         },
         PostProcScene,
-        //AutoInstanceMaterialRecursive, // This is maybe ok
-        //AutoInstanceMeshRecursive, // Don't use this yet
     ));
 
     // Sun
