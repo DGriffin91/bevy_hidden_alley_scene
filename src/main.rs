@@ -1,8 +1,10 @@
-use std::f32::consts::PI;
+use std::{f32::consts::PI, time::Instant};
 
 mod camera_controller;
 mod mipmap_generator;
 
+use argh::FromArgs;
+use auto_instance::{AutoInstanceMaterialPlugin, AutoInstancePlugin};
 use bevy::{
     core_pipeline::{
         bloom::BloomSettings,
@@ -15,7 +17,7 @@ use bevy::{
         CascadeShadowConfigBuilder, ScreenSpaceAmbientOcclusionBundle, TransmittedShadowReceiver,
     },
     prelude::*,
-    render::view::ColorGrading,
+    render::view::{ColorGrading, NoFrustumCulling},
     window::{PresentMode, WindowResolution},
     winit::{UpdateMode, WinitSettings},
 };
@@ -23,27 +25,48 @@ use camera_controller::CameraControllerPlugin;
 use mipmap_generator::{generate_mipmaps, MipmapGeneratorPlugin, MipmapGeneratorSettings};
 
 use crate::{
+    auto_instance::{AutoInstanceMaterialRecursive, AutoInstanceMeshRecursive},
     camera_controller::CameraController,
     convert::{change_gltf_to_use_ktx2, convert_images_to_ktx2},
 };
 
+mod auto_instance;
 mod convert;
 
+#[derive(FromArgs, Resource, Clone)]
+/// Config
+pub struct Args {
+    /// convert gltf to use ktx
+    #[argh(switch)]
+    convert: bool,
+
+    /// enable auto instancing for meshes/materials
+    #[argh(switch)]
+    instance: bool,
+
+    /// disable bloom, AO, AA, shadows
+    #[argh(switch)]
+    minimal: bool,
+
+    /// whether to disable frustum culling.
+    #[argh(switch)]
+    no_frustum_culling: bool,
+}
+
 pub fn main() {
-    let args = &mut std::env::args();
-    args.next();
-    if let Some(arg) = &args.next() {
-        if arg == "--convert" {
-            println!("This will take a few minutes");
-            convert_images_to_ktx2();
-            change_gltf_to_use_ktx2();
-        }
+    let args: Args = argh::from_env();
+
+    if args.convert {
+        println!("This will take a few minutes");
+        convert_images_to_ktx2();
+        change_gltf_to_use_ktx2();
     }
 
     let mut app = App::new();
 
-    app.insert_resource(Msaa::Off)
-        .insert_resource(ClearColor(Color::rgb(0.9, 0.9, 1.0) * 3.0))
+    app.insert_resource(args.clone())
+        .insert_resource(Msaa::Off)
+        .insert_resource(ClearColor(Color::rgb(0.9 * 3.0, 0.9 * 3.0, 1.0 * 3.0)))
         .insert_resource(AmbientLight {
             color: Color::rgb(0.0, 0.0, 0.0),
             brightness: 0.0,
@@ -73,9 +96,27 @@ pub fn main() {
             TemporalAntiAliasPlugin,
         ))
         // Mipmap generation be skipped if ktx2 is used
-        .add_systems(Update, (generate_mipmaps::<StandardMaterial>, proc_scene))
+        .add_systems(
+            Update,
+            (
+                generate_mipmaps::<StandardMaterial>,
+                proc_scene,
+                input,
+                benchmark,
+            ),
+        )
         .add_systems(Startup, setup)
         .add_systems(Update, move_directional_light);
+
+    if args.no_frustum_culling {
+        app.add_systems(Update, add_no_frustum_culling);
+    }
+    if args.instance {
+        app.add_plugins((
+            AutoInstancePlugin,
+            AutoInstanceMaterialPlugin::<StandardMaterial>::default(),
+        ));
+    }
 
     app.run();
 }
@@ -86,10 +127,10 @@ pub struct PostProcScene;
 #[derive(Component)]
 pub struct GrifLight;
 
-pub fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
+pub fn setup(mut commands: Commands, asset_server: Res<AssetServer>, args: Res<Args>) {
     println!("Loading models, generating mipmaps");
 
-    // San Miguel
+    // Hidden Alley
     commands.spawn((
         SceneBundle {
             scene: asset_server.load("hidden_alley/ph_hidden_alley_bevy_bake.gltf#Scene0"),
@@ -97,6 +138,8 @@ pub fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
             ..default()
         },
         PostProcScene,
+        AutoInstanceMaterialRecursive,
+        AutoInstanceMeshRecursive,
     ));
 
     // Sun
@@ -111,7 +154,7 @@ pub fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
             directional_light: DirectionalLight {
                 color: Color::rgb_linear(0.95, 0.69268, 0.537758),
                 illuminance: 3000000.0 * 0.2,
-                shadows_enabled: true,
+                shadows_enabled: !args.minimal,
                 shadow_depth_bias: 0.04,
                 shadow_normal_bias: 1.8,
             },
@@ -165,51 +208,61 @@ pub fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     ));
 
     // Camera
-    commands
-        .spawn((
-            Camera3dBundle {
-                camera: Camera {
-                    hdr: true,
-                    ..default()
-                },
-                transform: Transform::from_xyz(-17.68169, 0.7696594, 4.23056)
-                    .looking_at(Vec3::new(-20.0, 3.5, -10.0), Vec3::Y),
-                projection: Projection::Perspective(PerspectiveProjection {
-                    fov: std::f32::consts::PI / 3.0,
-                    ..default()
-                }),
-                color_grading: ColorGrading {
+    let mut cam = commands.spawn((
+        Camera3dBundle {
+            camera: Camera {
+                hdr: true,
+                ..default()
+            },
+            transform: Transform::from_xyz(-17.68169, 0.7696594, 4.23056)
+                .looking_at(Vec3::new(-20.0, 3.5, -10.0), Vec3::Y),
+            projection: Projection::Perspective(PerspectiveProjection {
+                fov: std::f32::consts::PI / 3.0,
+                ..default()
+            }),
+            color_grading: ColorGrading {
+                #[cfg(not(feature = "bevy_main"))]
+                exposure: -2.0,
+                #[cfg(feature = "bevy_main")]
+                global: bevy::render::view::ColorGradingGlobal {
                     exposure: -2.0,
                     ..default()
                 },
                 ..default()
             },
+            ..default()
+        },
+        EnvironmentMapLight {
+            diffuse_map: asset_server.load("environment_maps/pisa_diffuse_rgb9e5_zstd.ktx2"),
+            specular_map: asset_server.load("environment_maps/pisa_specular_rgb9e5_zstd.ktx2"),
+            intensity: 1000.0,
+        },
+        CameraController {
+            walk_speed: 2.0,
+            mouse_key_enable_mouse: MouseButton::Right,
+            ..default()
+        }
+        .print_controls(),
+    ));
+
+    if !args.minimal {
+        cam.insert((
+            BloomSettings {
+                intensity: 0.04,
+                ..default()
+            },
             FogSettings {
-                color: Color::rgb(0.9, 0.9, 1.0) * 3.0,
+                color: Color::rgb(0.9 * 3.0, 0.9 * 3.0, 1.0 * 3.0),
                 falloff: FogFalloff::Linear {
                     start: 4.0,
                     end: 500.0,
                 },
                 ..default()
             },
-            BloomSettings {
-                intensity: 0.04,
-                ..default()
-            },
-            EnvironmentMapLight {
-                diffuse_map: asset_server.load("environment_maps/pisa_diffuse_rgb9e5_zstd.ktx2"),
-                specular_map: asset_server.load("environment_maps/pisa_specular_rgb9e5_zstd.ktx2"),
-                intensity: 1000.0,
-            },
-            CameraController {
-                walk_speed: 2.0,
-                mouse_key_enable_mouse: MouseButton::Right,
-                ..default()
-            }
-            .print_controls(),
             TemporalAntiAliasBundle::default(),
         ))
         .insert(ScreenSpaceAmbientOcclusionBundle::default());
+    }
 }
 
 pub fn all_children<F: FnMut(Entity)>(
@@ -296,5 +349,93 @@ fn move_directional_light(
         let store = euler.lerp(*e_rot, 0.2);
         dbg!(store.x, store.y, store.z);
         trans.rotation = Quat::from_euler(EulerRot::XYZ, store.x, store.y, store.z);
+    }
+}
+
+const CAM_POS_1: Transform = Transform {
+    translation: Vec3::new(-17.68169, 0.7696594, 4.23056),
+    rotation: Quat::from_array([0.09313506, 0.08030538, -0.007536669, 0.992381]),
+    scale: Vec3::ONE,
+};
+
+const CAM_POS_2: Transform = Transform {
+    translation: Vec3::new(-17.04247, 1.6245718, -10.109302),
+    rotation: Quat::from_array([0.013972712, 0.4708807, -0.0074592647, 0.88205475]),
+    scale: Vec3::ONE,
+};
+
+const CAM_POS_3: Transform = Transform {
+    translation: Vec3::new(-18.569866, 1.4310247, -4.76668),
+    rotation: Quat::from_array([-0.027478473, -0.8478923, -0.044159003, 0.5276112]),
+    scale: Vec3::ONE,
+};
+
+fn input(input: Res<ButtonInput<KeyCode>>, mut camera: Query<&mut Transform, With<Camera>>) {
+    let Ok(mut transform) = camera.get_single_mut() else {
+        return;
+    };
+    if input.just_pressed(KeyCode::KeyI) {
+        info!("{:?}", transform);
+    }
+    if input.just_pressed(KeyCode::Digit1) {
+        *transform = CAM_POS_1
+    }
+    if input.just_pressed(KeyCode::Digit2) {
+        *transform = CAM_POS_2
+    }
+    if input.just_pressed(KeyCode::Digit3) {
+        *transform = CAM_POS_3
+    }
+}
+
+fn benchmark(
+    input: Res<ButtonInput<KeyCode>>,
+    mut camera: Query<&mut Transform, With<Camera>>,
+    mut bench_started: Local<Option<Instant>>,
+    mut bench_frame: Local<u32>,
+    mut count_per_step: Local<u32>,
+    time: Res<Time>,
+) {
+    if input.just_pressed(KeyCode::KeyB) && bench_started.is_none() {
+        *bench_started = Some(Instant::now());
+        *bench_frame = 0;
+        // Try to render for around 2s or at least 30 frames per step
+        *count_per_step = ((2.0 / time.delta_seconds()) as u32).max(30);
+        println!(
+            "Starting Benchmark with {} frames per step",
+            *count_per_step
+        );
+    }
+    if bench_started.is_none() {
+        return;
+    }
+    let Ok(mut transform) = camera.get_single_mut() else {
+        return;
+    };
+    if *bench_frame == 0 {
+        *transform = CAM_POS_1
+    } else if *bench_frame == *count_per_step {
+        *transform = CAM_POS_2
+    } else if *bench_frame == *count_per_step * 2 {
+        *transform = CAM_POS_3
+    } else if *bench_frame == *count_per_step * 3 {
+        let elapsed = bench_started.unwrap().elapsed().as_secs_f32();
+        println!(
+            "Benchmark avg cpu frame time: {:.2}ms",
+            (elapsed / *bench_frame as f32) * 1000.0
+        );
+        *bench_started = None;
+        *bench_frame = 0;
+        *transform = CAM_POS_1;
+    }
+    *bench_frame += 1;
+}
+
+pub fn add_no_frustum_culling(
+    mut commands: Commands,
+    convert_query: Query<Entity, (Without<NoFrustumCulling>, With<Handle<StandardMaterial>>)>,
+) {
+    for entity in convert_query.iter() {
+        commands.entity(entity).insert(NoFrustumCulling);
     }
 }
